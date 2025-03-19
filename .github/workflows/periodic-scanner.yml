@@ -1,0 +1,58 @@
+name: Pleo TruffleHog Scan
+on:
+  workflow_dispatch:
+    inputs:
+      should_run:
+        description: "Run Workflow"
+        type: boolean
+        default: true
+  schedule:
+    - cron: '0 0 * * 0'
+
+jobs:
+  get-repos:
+    name: Get Repos
+    runs-on: ubuntu-latest
+    outputs:
+      repos: ${{ steps.get-repos.outputs.repos }}
+    steps:
+      - name: Get Repositories Action
+        id: get-repos
+        uses: raven-actions/get-repos@v1
+        with:
+          owner: "pleo-io"
+
+  sync-repos:
+    name: Scan (${{ matrix.repo.name }})
+    if: ${{ needs.get-repos.outputs.repos != '[]' }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    needs:
+      - get-repos
+    strategy:
+      matrix:
+        repo: ${{ fromJson(needs.get-repos.outputs.repos) }}
+      fail-fast: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          repository: ${{ matrix.repo.full_name }}
+          fetch-depth: 0
+      - name: Run TruffleHog
+        run: |
+          docker run --rm -v $(pwd):/repo trufflesecurity/trufflehog:latest github --repo=${{matrix.repo.html_url}} --issue-comments --pr-comments --fail > trufflehog_results.json
+      - name: Post Results
+        if: failure()
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const fs = require('fs');
+            const results = fs.readFileSync('trufflehog_results.json', 'utf8');
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: 'Secrets detected in ${{ matrix.repo.full_name }}',
+              body: `Secrets detected! Fix these before merging:\n\`\`\`json\n${results}\n\`\`\``
+            });
